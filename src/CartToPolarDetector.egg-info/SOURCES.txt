@@ -1,0 +1,10 @@
+LICENSE
+MANIFEST.in
+README.md
+setup.py
+src/CartToPolarDetector.py
+src/CartToPolarDetector.egg-info/PKG-INFO
+src/CartToPolarDetector.egg-info/SOURCES.txt
+src/CartToPolarDetector.egg-info/dependency_links.txt
+src/CartToPolarDetector.egg-info/requires.txt
+src/CartToPolarDetector.egg-info/top_level.txt

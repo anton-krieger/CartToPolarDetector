@@ -1,0 +1,17 @@
+Metadata-Version: 1.2
+Name: CartToPolarDetector
+Version: 0.0.1
+Summary: A package to convert a cartesian detector grid into a polar detector grid taking into account the various possible cross section areas of cartesian and polar pixels.
+Home-page: https://github.com/anton-krieger/CartToPolarDetector
+Author: Anton Krieger
+Author-email: akrieger@astrophysik.uni-kiel.de
+License: MIT
+Description: UNKNOWN
+Platform: UNKNOWN
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.6
+Classifier: Programming Language :: Python :: 3.7
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.6.0

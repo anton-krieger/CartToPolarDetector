@@ -1,0 +1,16 @@
+Output data is accessed via np.load('path/to/output.npz')['polar']
+------------------------------------------------------------------
+data_cart_path = ./input/cartesian_detector.npz
+N_phi          = 96
+N_r            = 64
+center_shift   = [1.5, -3]
+save_name      = wave_example3
+save_name_fin  = wave_example3
+R_px_max       = 10.0
+R_px_max_in    = 10.0
+N_x            = 30
+N_y            = 30
+center         = [16.5 12. ]
+dphi           = 0.06544984694978735
+dr             = 0.15625
+progress_bar   = False
