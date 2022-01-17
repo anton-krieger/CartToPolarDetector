@@ -22,5 +22,5 @@ This short tutorial additionally requires matplotlib.
 
 ## Citation
 
-If *ConvertToPolarDetector* is integral to a scientific publication, please cite it. A paper that describes the method is used in this tool is submitted and will soon be found on my ORCID page: https://orcid.org/0000-0002-3639-2435
+If *ConvertToPolarDetector* is integral to a scientific publication, please cite it. A paper that describes the method that is used in this tool is submitted and will soon be found on my ORCID page: https://orcid.org/0000-0002-3639-2435
 
