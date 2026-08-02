@@ -1,7 +1,19 @@
-# This script was created by Anton Krieger, for details on the various 
-# calculations you can just think about it yourself :P or just contact me ;)
+""" CartToPolarDetector: convert a cartesian detector grid into a polar detector grid.
+
+The conversion overlays the cartesian detector with a polar grid and computes the
+polar pixel values from the exact geometrical cross-section areas of cartesian and
+polar pixels, thereby conserving the overall flux. It does not rely on approximation
+methods such as nearest-neighbor sampling or interpolation.
+
+The method is described in Appendix B of:
+	Krieger, A., & Wolf, S. 2022, A&A, 662, A99
+	https://doi.org/10.1051/0004-6361/202142652
+
+Author: Anton Krieger
+"""
 
 import numpy as np
+import math
 import sys
 import os
 
@@ -9,8 +21,9 @@ pix2 = 2.*np.pi
 pi = np.pi
 
 def get_overall_pixel_position(c):
-	""" returns the pixel position in terms of its location in the 
-		new coordinate system, e.g., Top left == 'TL' """
+	""" returns the pixel's coarse position relative to the defined center:
+		'M' if the center lies inside the pixel, else 'T', 'B', 'L', 'R',
+		or a corner label such as 'TL' (top left) """
 	
 	if (c[1] >= 0.5):
 		if (c[0] >= 0.5): return "TR"
@@ -27,22 +40,24 @@ def get_overall_pixel_position(c):
 
 
 def get_phi(p):
-	""" given a position, it calculates the angle phi """
+	""" polar angle phi in [0,2pi) of position p = [x,y];
+		phi = 0 points in +y direction and increases toward +x """
 	
-	phi = np.arctan2(p[0],p[1])
+	phi = math.atan2(p[0],p[1])
 	if phi<0.: phi += pix2
 	
 	return phi
 
 def get_r(p):
-	""" given a position, it calculates its vectors length """
-	return np.sqrt(p[0]*p[0]+p[1]*p[1])
+	""" Euclidean distance of position p from the origin """
+	return math.sqrt(p[0]*p[0]+p[1]*p[1])
 
 def get_R_px_max(c,N_x,N_y):
-	""" given a position of the new grid in the previous cartesian grid 
-		as well as the extend (pixel) of the region, this function
-		determines the maxium radius (pixel) that needs to be considered"""
+	""" given the center position c within a cartesian grid of N_x x N_y pixels,
+		returns the maximum radius (in pixels) that needs to be considered,
+		i.e., the distance from c to the farthest grid corner """
 	
+	# coordinates of the grid corner farthest from the center
 	corx = N_x if c[0]<N_x/2. else 0
 	cory = N_y if c[1]<N_y/2. else 0
 	
@@ -60,63 +75,34 @@ def get_ring_pos(r0,c,R_corner,do):
 		# circle, pixel, circle: "cpc"
 	"""
 
-	ring_pos = np.array(["xxx","xxx","xxx","xxx"])
-	idx = 0
-	if do["has_a_o"] == 0:
-		if ((r0 < R_corner[idx%4]) and (r0 < R_corner[(idx-1)%4])): ring_pos[idx] = "c"
-		elif ((r0 >= R_corner[idx%4]) and (r0 >= R_corner[(idx-1)%4])): ring_pos[idx] = "p"
-	elif do["has_a_o"] == 1:
-		if c[0] >= 0: ring_pos[idx] = "pc"
-		else: ring_pos[idx] = "cp"
-	elif do["has_a_o"] == 2: 
-		ring_pos[idx] = "cpc"
-	else:
-		print("Error! Unexpected number of intersections:",do["has_a_o"])
-	
-	idx = 1
-	if do["has_b_o"] == 0:
-		if ((r0 < R_corner[idx%4]) and (r0 < R_corner[(idx-1)%4])): ring_pos[idx] = "c"
-		elif ((r0 >= R_corner[idx%4]) and (r0 >= R_corner[(idx-1)%4])): ring_pos[idx] = "p"
-	elif do["has_b_o"] == 1:
-		if c[1] <= 0: ring_pos[idx] = "pc"
-		else: ring_pos[idx] = "cp"
-	elif do["has_b_o"] == 2: ring_pos[idx] = "cpc"
-	else:
-		print("Error! Unexpected number of intersections:",do["has_b_o"])
-	
-	idx = 2
-	if do["has_c_o"] == 0:
-		if ((r0 < R_corner[idx%4]) and (r0 < R_corner[(idx-1)%4])): ring_pos[idx] = "c"
-		elif ((r0 >= R_corner[idx%4]) and (r0 >= R_corner[(idx-1)%4])): ring_pos[idx] = "p"
-	elif do["has_c_o"] == 1:
-		if c[0] <= 0: ring_pos[idx] = "pc"
-		else: ring_pos[idx] = "cp"
-	elif do["has_c_o"] == 2: ring_pos[idx] = "cpc"
-	else:
-		print("Error! Unexpected number of intersections:",do["has_c_o"])
-	
-	idx = 3
-	if do["has_d_o"] == 0:
-		if ((r0 < R_corner[idx%4]) and (r0 < R_corner[(idx-1)%4])): ring_pos[idx] = "c"
-		elif ((r0 >= R_corner[idx%4]) and (r0 >= R_corner[(idx-1)%4])): ring_pos[idx] = "p"
-	elif do["has_d_o"] == 1:
-		if c[1] >= 0: ring_pos[idx] = "pc"
-		else: ring_pos[idx] = "cp"
-	elif do["has_d_o"] == 2: ring_pos[idx] = "cpc"
-	else:
-		print("Error! Unexpected number of intersections:",do["has_d_o"])
+	# start with the placeholder "unset"; every entry must be overwritten below
+	# (the validation loop at the end catches any entry that was not set)
+	ring_pos = np.full(4,"unset")
+	# for each edge (a,b,c,d): condition telling whether the center lies on the
+	# side of the edge such that the pixel border comes first ("pc") in phi direction
+	pixel_first = [c[0] >= 0, c[1] <= 0, c[0] <= 0, c[1] >= 0]
+	for idx,edge in enumerate(["a","b","c","d"]):
+		if do["has_"+edge+"_o"] == 0:
+			if ((r0 < R_corner[idx%4]) and (r0 < R_corner[(idx-1)%4])): ring_pos[idx] = "c"
+			elif ((r0 >= R_corner[idx%4]) and (r0 >= R_corner[(idx-1)%4])): ring_pos[idx] = "p"
+		elif do["has_"+edge+"_o"] == 1:
+			if pixel_first[idx]: ring_pos[idx] = "pc"
+			else: ring_pos[idx] = "cp"
+		elif do["has_"+edge+"_o"] == 2: ring_pos[idx] = "cpc"
+		else:
+			print("Error! Unexpected number of intersections:",do["has_"+edge+"_o"])
 	
 	for string in ring_pos:
 		if string not in ["c","p","cp","pc","cpc"]:
-			print("Error! Unexpected string: "+string)
-			sys.exit()
+			raise RuntimeError("Error! Unexpected string: "+string)
 	
 	return ring_pos
 	
 
 def get_contr_bins(c,pos,N_phi,N_r,dphi,dr):
-	""" the n_phi_min, n_phi_max, n_r_min and n_r_max;
-		these are the furthest left, right, bottom, top new pixels getting contributions """
+	""" determines the range of polar bins (n_phi_min..n_phi_max, n_r_min..n_r_max)
+		that receive contributions from the cartesian pixel centered at c;
+		n_r_min == -1 signals a pixel that lies fully outside the polar grid """
 
 	# 0. preparation: 
 	# get four corners in order: TR, BR, BL, TL
@@ -129,12 +115,12 @@ def get_contr_bins(c,pos,N_phi,N_r,dphi,dr):
 	# 1. get phi bins with contribution
 	if pos == "M": n_phi_min, n_phi_max = 0, N_phi-1
 	elif pos == "T":
-		n_phi_min = np.floor(get_phi(c3)/dphi)
-		n_phi_max = np.floor(get_phi(c2)/dphi)
+		n_phi_min = math.floor(get_phi(c3)/dphi)
+		n_phi_max = math.floor(get_phi(c2)/dphi)
 	else: 
 		phis = (get_phi(c1),get_phi(c2),get_phi(c3),get_phi(c4))
-		n_phi_min = np.floor(min(ph for ph in phis if ph>0)/dphi)
-		n_phi_max = np.floor(max(ph for ph in phis if ph>0)/dphi)
+		n_phi_min = math.floor(min(ph for ph in phis if ph>0)/dphi)
+		n_phi_max = math.floor(max(ph for ph in phis if ph>0)/dphi)
 		if pos in ["TL","L"]: 
 			# now we check if by concidence, one of the corners is exactly above our defined center (so in phi=0 or phi=2pi direction)
 			if 0 in phis: n_phi_max = N_phi-1
@@ -146,22 +132,22 @@ def get_contr_bins(c,pos,N_phi,N_r,dphi,dr):
 	rs = (get_r(c1),get_r(c2),get_r(c3),get_r(c4))
 	if pos == "M": 
 		n_r_min = 0
-		n_r_max = min(np.floor(max(rs)/dr),N_r-1)
+		n_r_max = min(math.floor(max(rs)/dr),N_r-1)
 	elif pos == "T":
-		n_r_min = max(np.floor((c[1] - 0.5)/dr),0)
-		n_r_max = min(np.floor(max(rs)/dr),N_r-1)
+		n_r_min = max(math.floor((c[1] - 0.5)/dr),0)
+		n_r_max = min(math.floor(max(rs)/dr),N_r-1)
 	elif pos == "R":
-		n_r_min = max(np.floor((c[0] - 0.5)/dr),0)
-		n_r_max = min(np.floor(max(rs)/dr),N_r-1)
+		n_r_min = max(math.floor((c[0] - 0.5)/dr),0)
+		n_r_max = min(math.floor(max(rs)/dr),N_r-1)
 	elif pos == "B":
-		n_r_min = max(np.floor((-c[1] - 0.5)/dr),0)
-		n_r_max = min(np.floor(max(rs)/dr),N_r-1)
+		n_r_min = max(math.floor((-c[1] - 0.5)/dr),0)
+		n_r_max = min(math.floor(max(rs)/dr),N_r-1)
 	elif pos == "L":
-		n_r_min = max(np.floor((-c[0] - 0.5)/dr),0)
-		n_r_max = min(np.floor(max(rs)/dr),N_r-1)
+		n_r_min = max(math.floor((-c[0] - 0.5)/dr),0)
+		n_r_max = min(math.floor(max(rs)/dr),N_r-1)
 	else:
-		n_r_min = np.floor(min(rs)/dr)
-		n_r_max = min(np.floor(max(rs)/dr),N_r-1)
+		n_r_min = math.floor(min(rs)/dr)
+		n_r_max = min(math.floor(max(rs)/dr),N_r-1)
 	
 	if n_r_min>N_r-1: n_r_min=-1
 	
@@ -204,21 +190,29 @@ def rotate_pixel(c,pos,n_phi_min,n_phi_max,N_phi):
 		pos_new = "T"
 	elif pos == "M": return c,pos,n_phi_min,n_phi_max
 	else:
-		print("Error! Unexpected position encountered: ",pos)
-		sys.exit()
+		raise RuntimeError(f"Error! Unexpected position encountered: {pos}")
 	
 	return c_new,pos_new,n_phi_min_new,n_phi_max_new
 
 
 def ok(x):
-	""" checks whether an intersection occured """
+	""" checks whether an edge parameter x corresponds to a true intersection,
+		i.e., lies within the pixel edge (0 <= x <= 1) """
 	return (0<=x<=1)
 
+def get_edge_phi(horizontal,sd,E):
+	""" phi-angle of a circle-edge intersection point;
+		sd is the signed root term, E the fixed coordinate of the edge line """
+	if horizontal: phi = math.atan2(sd,E)
+	else: phi = math.atan2(E,sd)
+	if phi < 0: phi += pix2
+	return phi
+
 def get_circle_pixel_intersect(c,r0):
-	""" - given a circle of radius r0 and a pixel with center c = [c_x,c_y];
-		  it calcualtes intersection points of the circle and the pixels edges
-		  as well as their phi-angles 
-		- returns dictionary with solutions 
+	""" - given a circle of radius r0 and a pixel with center c = [c_x,c_y],
+		  it calculates the intersection points of the circle with the pixel's
+		  edges as well as their phi-angles
+		- returns a dictionary with the solutions and their counts ('has_*_o')
 	"""
 	
 	# create dictionary; the o letter symbolizes a circle
@@ -227,121 +221,42 @@ def get_circle_pixel_intersect(c,r0):
 	# get squared radius
 	r2 = r0*r0
 	
-	# get a0 values
-	det = r2 - (c[1] + 0.5)*(c[1] + 0.5)
-	if det >= 0:
-		
-		# get solutions
-		t1, det  = -(c[0] - 0.5), np.sqrt(det)
-		t1, t2 = t1 - det, t1 + det
-		
-		# find true intersections, their phi-values and their occurance rates
-		if ok(t1): 
-			do["a_o"] = t1
-			do["phi_a_o"] = np.arctan2(-det,c[1]+0.5)
-			if do["phi_a_o"] < 0: do["phi_a_o"] += pix2
-			if ok(t2): 
-				do["a_o+"] = t2
-				do["phi_a_o+"] = np.arctan2(det,c[1]+0.5)
-				if do["phi_a_o+"] < 0: do["phi_a_o+"] += pix2
-				if do["phi_a_o"] < np.pi: do["phi_a_o"] += pix2
-				do["has_a_o"] = 2
-			else: do["has_a_o"] = 1
-		elif ok(t2): 
-			do["a_o"] = t2
-			do["phi_a_o"] = np.arctan2(det,c[1]+0.5)
-			if do["phi_a_o"] < 0: do["phi_a_o"] += pix2
-			do["has_a_o"] = 1
-		else:
-			do["has_a_o"] = 0
-	else: do["has_a_o"] = 0
-
-	
-	# get b0 values
-	det = r2 - (c[0] + 0.5)*(c[0] + 0.5)
-	if det >= 0:
-		
-		# get solutions
-		t1, det  = (c[1] + 0.5), np.sqrt(det)
-		t1, t2 = t1 - det, t1 + det
-		
-		# find true intersections, their phi-values and their occurance rates
-		if ok(t1): 
-			do["b_o"] = t1
-			do["phi_b_o"] = np.arctan2(c[0]+0.5,det)
-			if do["phi_b_o"] < 0: do["phi_b_o"] += pix2
-			if ok(t2): 
-				do["b_o+"] = t2
-				do["phi_b_o+"] = np.arctan2(c[0]+0.5,-det)
-				if do["phi_b_o+"] < 0: do["phi_b_o+"] += pix2
-				do["has_b_o"] = 2
-			else: do["has_b_o"] = 1
-		elif ok(t2): 
-			do["b_o"] = t2
-			do["phi_b_o"] = np.arctan2(c[0]+0.5,-det)
-			if do["phi_b_o"] < 0: do["phi_b_o"] += pix2
-			do["has_b_o"] = 1
-		else:
-			do["has_b_o"] = 0
-	else: do["has_b_o"] = 0
-
-	
-	# get c0 values
-	det = r2 - (c[1] - 0.5)*(c[1] - 0.5)
-	if det >= 0:
-		
-		# get solutions
-		t1, det  = (c[0] + 0.5), np.sqrt(det)
-		t1, t2 = t1 - det, t1 + det
-		
-		# find true intersections, their phi-values and their occurance rates
-		if ok(t1): 
-			do["c_o"] = t1
-			do["phi_c_o"] = np.arctan2(det,c[1]-0.5)
-			if do["phi_c_o"] < 0: do["phi_c_o"] += pix2
-			if ok(t2): 
-				do["c_o+"] = t2
-				do["phi_c_o+"] = np.arctan2(-det,c[1]-0.5)
-				if do["phi_c_o+"] < 0: do["phi_c_o+"] += pix2
-				do["has_c_o"] = 2
-			else: do["has_c_o"] = 1
-		elif ok(t2): 
-			do["c_o"] = t2
-			do["phi_c_o"] = np.arctan2(-det,c[1]-0.5)
-			if do["phi_c_o"] < 0: do["phi_c_o"] += pix2
-			do["has_c_o"] = 1
-		else:
-			do["has_c_o"] = 0
-	else: do["has_c_o"] = 0
-
-	
-	# get d0 values
-	det = r2 - (c[0] - 0.5)*(c[0] - 0.5)
-	if det >= 0:
-		
-		# get solutions
-		t1, det  = -(c[1] - 0.5), np.sqrt(det)
-		t1, t2 = t1 - det, t1 + det
-		
-		# find true intersections, their phi-values and their occurance rates
-		if ok(t1): 
-			do["d_o"] = t1
-			do["phi_d_o"] = np.arctan2(c[0]-0.5,-det)
-			if do["phi_d_o"] < 0: do["phi_d_o"] += pix2
-			if ok(t2): 
-				do["d_o+"] = t2
-				do["phi_d_o+"] = np.arctan2(c[0]-0.5,det)
-				if do["phi_d_o+"] < 0: do["phi_d_o+"] += pix2
-				do["has_d_o"] = 2
-			else: do["has_d_o"] = 1
-		elif ok(t2): 
-			do["d_o"] = t2
-			do["phi_d_o"] = np.arctan2(c[0]-0.5,det)
-			if do["phi_d_o"] < 0: do["phi_d_o"] += pix2
-			do["has_d_o"] = 1
-		else:
-			do["has_d_o"] = 0
-	else: do["has_d_o"] = 0
+	# for each edge (a: top, b: right, c: bottom, d: left):
+	# E is the fixed coordinate of the edge line, t_base the parameter value of
+	# the point closest to the circle center, horizontal tells whether the edge
+	# is parallel to the x-axis and s1 is the sign of the root term at solution t1
+	edges = [
+		("a", c[1]+0.5, -(c[0]-0.5), True,  -1.),
+		("b", c[0]+0.5,   c[1]+0.5,  False,  1.),
+		("c", c[1]-0.5,   c[0]+0.5,  True,   1.),
+		("d", c[0]-0.5, -(c[1]-0.5), False, -1.),
+	]
+	for edge,E,t_base,horizontal,s1 in edges:
+		det = r2 - E*E
+		if det >= 0:
+			
+			# get solutions
+			det = math.sqrt(det)
+			t1, t2 = t_base - det, t_base + det
+			
+			# find true intersections, their phi-values and their occurance rates
+			if ok(t1): 
+				do[edge+"_o"] = t1
+				do["phi_"+edge+"_o"] = get_edge_phi(horizontal,s1*det,E)
+				if ok(t2): 
+					do[edge+"_o+"] = t2
+					do["phi_"+edge+"_o+"] = get_edge_phi(horizontal,-s1*det,E)
+					# edge a crosses the phi=0 ray: keep the two phi-values ordered
+					if edge == "a" and do["phi_a_o"] < np.pi: do["phi_a_o"] += pix2
+					do["has_"+edge+"_o"] = 2
+				else: do["has_"+edge+"_o"] = 1
+			elif ok(t2): 
+				do[edge+"_o"] = t2
+				do["phi_"+edge+"_o"] = get_edge_phi(horizontal,-s1*det,E)
+				do["has_"+edge+"_o"] = 1
+			else:
+				do["has_"+edge+"_o"] = 0
+		else: do["has_"+edge+"_o"] = 0
 
 	return do
 
@@ -353,49 +268,44 @@ def get_ray_pixel_intersect_M(ce,phi,Phi_corner):
 	
 	if phi<=Phi_corner[0]:
 		# we need to find an a value 
-		a = (ce[1]+0.5) * np.tan(phi) - (ce[0]-0.5)
+		a = (ce[1]+0.5) * math.tan(phi) - (ce[0]-0.5)
 		if -1e-12< a <1.+1e-12: 
 			# ~ dI["a_I"] = max(min(a,1.),0.)
 			dI["a_I"] = a		# we accept a small exceedance of the limits
 		else: 
-			print("Error! the intersection is to far from the expected region:",a)
-			sys.exit()
+			raise RuntimeError(f"Error! the intersection is too far from the expected region: {a}")
 	elif phi<=Phi_corner[1]:
 		# we need to find an b value 
-		b = - (ce[0]+0.5) / np.tan(phi) + (ce[1]+0.5)
+		b = - (ce[0]+0.5) / math.tan(phi) + (ce[1]+0.5)
 		if -1e-12< b <1.+1e-12: 
 			# ~ dI["b_I"] = max(min(b,1.),0.)
 			dI["b_I"] = b		# we accept a small exceedance of the limits
 		else: 
-			print("Error! the intersection is to far from the expected region:",a)
-			sys.exit()
+			raise RuntimeError(f"Error! the intersection is too far from the expected region: {b}")
 	elif phi<=Phi_corner[2]:
 		# we need to find an c value 
-		c = - (ce[1]-0.5) * np.tan(phi) + (ce[0]+0.5)
+		c = - (ce[1]-0.5) * math.tan(phi) + (ce[0]+0.5)
 		if -1e-12< c <1.+1e-12: 
 			# ~ dI["c_I"] = max(min(c,1.),0.)
 			dI["c_I"] = c		# we accept a small exceedance of the limits
 		else: 
-			print("Error! the intersection is to far from the expected region:",a)
-			sys.exit()
+			raise RuntimeError(f"Error! the intersection is too far from the expected region: {c}")
 	elif phi<=Phi_corner[3]:
 		# we need to find an d value 
-		d = (ce[0]-0.5) / np.tan(phi) - (ce[1]-0.5)
+		d = (ce[0]-0.5) / math.tan(phi) - (ce[1]-0.5)
 		if -1e-12< d <1.+1e-12: 
 			# ~ dI["d_I"] = max(min(d,1.),0.)
 			dI["d_I"] = d		# we accept a small exceedance of the limits
 		else: 
-			print("Error! the intersection is to far from the expected region:",a)
-			sys.exit()
+			raise RuntimeError(f"Error! the intersection is too far from the expected region: {d}")
 	else:
 		# we need to find an a value 
-		a = (ce[1]+0.5) * np.tan(phi) - (ce[0]-0.5)
+		a = (ce[1]+0.5) * math.tan(phi) - (ce[0]-0.5)
 		if -1e-12< a <1.+1e-12: 
 			# ~ dI["a_I"] = max(min(a,1.),0.)
 			dI["a_I"] = a		# we accept a small exceedance of the limits
 		else: 
-			print("Error! the intersection is to far from the expected region:",a)
-			sys.exit()
+			raise RuntimeError(f"Error! the intersection is too far from the expected region: {a}")
 	
 	return dI
 		
@@ -412,7 +322,7 @@ def get_ray_pixel_intersect_non_M(ce,phi):
 	 What are a,b,c, and d?
 	 They represent the four different sides of a pixel and measure the distance 
 	 from a corner to the point of intersection in units of pixel edges.
-	 A value between 0 and 1 represents an intersection. The upper left corer 
+	 A value between 0 and 1 represents an intersection. The upper left corner 
 	 is the startingpoint of a and then clockwise we get the startingpoints of
 	 the values b, c, and d. The direction in which they measure distances is also 
 	 clockwise:
@@ -431,7 +341,7 @@ def get_ray_pixel_intersect_non_M(ce,phi):
 	dI = {}
 	
 	# calculate the slope parameters
-	one_div_m = np.tan(phi)
+	one_div_m = math.tan(phi)
 
 	if one_div_m!=0.:
 		m = 1./one_div_m
@@ -451,14 +361,15 @@ def get_ray_pixel_intersect_non_M(ce,phi):
 	# we check first if the number is on the edge (ok) and if so, we check, 
 	# whether the solution is actually in the direction of the ray
 	# and not in its negative direction
+	sin_phi, cos_phi = math.sin(phi), math.cos(phi)
 	if ok(a): 
-		if ((ce[0]-0.5+a) * np.sin(phi) + (ce[1]+0.5) * np.cos(phi) >= 0.): dI["a_I"] = a
+		if ((ce[0]-0.5+a) * sin_phi + (ce[1]+0.5) * cos_phi >= 0.): dI["a_I"] = a
 	if ok(b): 
-		if ((ce[0]+0.5) * np.sin(phi) + (ce[1]+0.5-b) * np.cos(phi) >= 0.): dI["b_I"] = b
+		if ((ce[0]+0.5) * sin_phi + (ce[1]+0.5-b) * cos_phi >= 0.): dI["b_I"] = b
 	if ok(c): 
-		if ((ce[0]+0.5-c) * np.sin(phi) + (ce[1]-0.5) * np.cos(phi) >= 0.): dI["c_I"] = c
+		if ((ce[0]+0.5-c) * sin_phi + (ce[1]-0.5) * cos_phi >= 0.): dI["c_I"] = c
 	if ok(d): 
-		if ((ce[0]-0.5) * np.sin(phi) + (ce[1]-0.5+d) * np.cos(phi) >= 0.): dI["d_I"] = d
+		if ((ce[0]-0.5) * sin_phi + (ce[1]-0.5+d) * cos_phi >= 0.): dI["d_I"] = d
 		
 	return dI
 
@@ -488,8 +399,8 @@ def get_area_summed(pos,c,phi,r0,do,dI,phi_c,R_corner,Phi_corner,X_rim,ring_pos)
 	""" - given a pixel, a ray, and a circle including all its properties,
 		  this function determines the intersection area of the pixel and
 		  the area inside the radius of the circle and left to the ray
-		- phi_c is the phi value correspondng to the center of the pixel
-		- r_corner is an array containing the 4 radial distances to the 
+		- phi_c is the phi value corresponding to the center of the pixel
+		- R_corner is an array containing the 4 radial distances to the 
 		  corners of the pixel (r1,r2,r3,r4)
 	"""
 	
@@ -497,8 +408,7 @@ def get_area_summed(pos,c,phi,r0,do,dI,phi_c,R_corner,Phi_corner,X_rim,ring_pos)
 	elif pos == "T": return get_area_summed_T(c,phi,r0,do,dI,phi_c,R_corner)
 	elif pos == "M": return get_area_summed_M(c,phi,r0,do,dI,phi_c,R_corner,Phi_corner,X_rim,ring_pos)
 	else: 
-		print("Error! Unexpected position for area determination:",pos)
-		sys.exit()
+		raise RuntimeError(f"Error! Unexpected position for area determination: {pos}")
 	
 
 def get_area_summed_TR(c,phi,r0,do,dI,phi_c,R_corner):
@@ -548,7 +458,6 @@ def get_area_summed_TR(c,phi,r0,do,dI,phi_c,R_corner):
 				if (phi<=do.get("phi_a_o")): return 0.5 * (1.-dI.get("d_I")) * dI.get("a_I")
 				elif (phi<=do.get("phi_b_o")): return 0.5 * ( (c[1]+0.5)*do.get("a_o") + (phi-do.get("phi_a_o"))*r0*r0 - (c[0]-0.5)*(1.-dI.get("d_I")) )
 				elif (dI.get("b_I")!=None): return 0.5 * ( (c[1]+0.5)*do.get("a_o") + (do.get("phi_b_o")-do.get("phi_a_o"))*r0*r0 + (c[0]+0.5)*(dI.get("b_I")-do.get("b_o")) - (c[0]-0.5)*(1.-dI.get("d_I")) )
-				elif (dI.get("b_I")!=None): return 0.5 * ( (c[1]+0.5)*do.get("a_o") + (do.get("phi_b_o")-do.get("phi_a_o"))*r0*r0 + (c[0]+0.5)*(dI.get("b_I")-do.get("b_o")) - (c[0]-0.5)*(1.-dI.get("d_I")) )
 				elif dI.get("d_I")==0.: return 0.5 * ( (c[1]+0.5)*do.get("a_o") + (do.get("phi_b_o")-do.get("phi_a_o"))*r0*r0 - (c[0]-0.5) + (c[0]+0.5)*(1.-do.get("b_o")) )
 				else: print("Error! 2.1 Unexpected case.")
 			elif (dI.get("c_I")!=None):
@@ -595,7 +504,7 @@ def get_area_summed_TR(c,phi,r0,do,dI,phi_c,R_corner):
 		
 	print("c,phi,r0,do,dI,phi_c,R_corner")
 	print(c,phi,r0,do,dI,phi_c,R_corner)
-	sys.exit()
+	raise RuntimeError("Error! Unexpected case in TR area determination.")
 
 def get_area_summed_T(c,phi,r0,do,dI,phi_c,R_corner):
 	""" given a pixel in the position top ('T'), a ray, 
@@ -711,7 +620,7 @@ def get_area_summed_T(c,phi,r0,do,dI,phi_c,R_corner):
 	
 	print("c,phi,r0,do,dI,phi_c,R_corner")
 	print(c,phi,r0,do,dI,phi_c,R_corner)
-	sys.exit()
+	raise RuntimeError("Error! Unexpected case in T area determination.")
 
 
 def get_area_summed_M(c,phi,r0,do,dI,phi_c,R_corner,Phi_corner,X_rim,ring_pos):
@@ -719,8 +628,8 @@ def get_area_summed_M(c,phi,r0,do,dI,phi_c,R_corner,Phi_corner,X_rim,ring_pos):
 		and a circle including all its properties,
 		this function determines the intersection area of the pixel and
 		the area inside the radius of the circle and left to the ray;
-		this function, oposed to the others, is not derived on paper. 
-		I was to impatient and just wrote it down in python. """
+		it walks in phi direction over the four edges (a,b,c,d) and
+		accumulates the partial areas until the ray angle phi is reached """
 	
 	# the area will be increased during this function
 	area = 0
@@ -746,71 +655,30 @@ def get_area_summed_M(c,phi,r0,do,dI,phi_c,R_corner,Phi_corner,X_rim,ring_pos):
 		elif ring_pos[idx] == "pc": area += 0.5 * ( (do["a_o"] - X_rim[(idx-1)%4])*(0.5+c[1]) + (Phi_corner[idx]-do["phi_a_o"])*r0*r0 )
 		elif ring_pos[idx] == "cpc": area += 0.5 * ( (do["a_o+"] - X_rim[(idx-1)%4])*(0.5+c[1]) + (Phi_corner[idx]-do["phi_a_o+"])*r0*r0 )
 
-	idx = 1
-	if phi<=Phi_corner[idx]:
-		if ring_pos[idx] == "p": area += 0.5 * ( dI["b_I"]*(0.5+c[0]) )
-		elif ring_pos[idx] == "c": area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
-		elif ring_pos[idx] == "cp": 
-			if phi<do["phi_b_o"]: area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
-			else: area += 0.5 * ( (do["phi_b_o"]-Phi_corner[idx-1])*r0*r0 + (dI["b_I"] - do["b_o"])*(0.5+c[0]) )
-		elif ring_pos[idx] == "pc": 
-			if phi<do["phi_b_o"]: area += 0.5 * ( dI["b_I"]*(0.5+c[0]) )
-			else: area += 0.5 *  ( do["b_o"]*(0.5+c[0]) + (phi-do["phi_b_o"])*r0*r0 )
-		elif ring_pos[idx] == "cpc": 
-			if phi<do["phi_b_o"]: area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
-			elif phi<do["phi_b_o+"]: area += 0.5 * ( (do["phi_b_o"]-Phi_corner[idx-1])*r0*r0 + (dI["b_I"] - do["b_o"])*(0.5+c[0]) )
-			else: area += 0.5 * ( (do["phi_b_o"]-Phi_corner[idx-1])*r0*r0 + (do["b_o+"] - do["b_o"])*(0.5+c[0]) + (phi-do["phi_b_o+"])*r0*r0 )
-		return area
-	else:
-		if ring_pos[idx] == "p": area += 0.5 * ( (0.5+c[0]) )
-		elif ring_pos[idx] == "c": area += 0.5 * ( (Phi_corner[idx]-Phi_corner[idx-1]) * r0*r0)
-		elif ring_pos[idx] == "cp": area += 0.5 * ( (do["phi_b_o"]-Phi_corner[idx-1])*r0*r0 + (1. - do["b_o"])*(0.5+c[0]) )
-		elif ring_pos[idx] == "pc": area += 0.5 * ( do["b_o"]*(0.5+c[0]) + (Phi_corner[idx]-do["phi_b_o"])*r0*r0 )
-		elif ring_pos[idx] == "cpc": area += 0.5 * ( (do["phi_b_o"]-Phi_corner[idx-1])*r0*r0 + (do["b_o+"] - do["b_o"])*(0.5+c[0]) + (Phi_corner[idx]-do["phi_b_o+"])*r0*r0 )
-
-	idx = 2
-	if phi<=Phi_corner[idx]:
-		if ring_pos[idx] == "p": area += 0.5 * ( dI["c_I"]*(0.5-c[1]) )
-		elif ring_pos[idx] == "c": area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
-		elif ring_pos[idx] == "cp": 
-			if phi<do["phi_c_o"]: area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
-			else: area += 0.5 * ( (do["phi_c_o"]-Phi_corner[idx-1])*r0*r0 + (dI["c_I"] - do["c_o"])*(0.5-c[1]) )
-		elif ring_pos[idx] == "pc": 
-			if phi<do["phi_c_o"]: area += 0.5 * ( dI["c_I"]*(0.5-c[1]) )
-			else: area += 0.5 *  ( do["c_o"]*(0.5-c[1]) + (phi-do["phi_c_o"])*r0*r0 )
-		elif ring_pos[idx] == "cpc": 
-			if phi<do["phi_c_o"]: area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
-			elif phi<do["phi_c_o+"]: area += 0.5 * ( (do["phi_c_o"]-Phi_corner[idx-1])*r0*r0 + (dI["c_I"] - do["c_o"])*(0.5-c[1]) )
-			else: area += 0.5 * ( (do["phi_c_o"]-Phi_corner[idx-1])*r0*r0 + (do["c_o+"] - do["c_o"])*(0.5-c[1]) + (phi-do["phi_c_o+"])*r0*r0 )
-		return area
-	else:
-		if ring_pos[idx] == "p": area += 0.5 * ( (0.5-c[1]) )
-		elif ring_pos[idx] == "c": area += 0.5 * ( (Phi_corner[idx]-Phi_corner[idx-1]) * r0*r0)
-		elif ring_pos[idx] == "cp": area += 0.5 * ( (do["phi_c_o"]-Phi_corner[idx-1])*r0*r0 + (1. - do["c_o"])*(0.5-c[1]) )
-		elif ring_pos[idx] == "pc": area += 0.5 * ( do["c_o"]*(0.5-c[1]) + (Phi_corner[idx]-do["phi_c_o"])*r0*r0 )
-		elif ring_pos[idx] == "cpc": area += 0.5 * ( (do["phi_c_o"]-Phi_corner[idx-1])*r0*r0 + (do["c_o+"] - do["c_o"])*(0.5-c[1]) + (Phi_corner[idx]-do["phi_c_o+"])*r0*r0 )
-
-	idx = 3
-	if phi<=Phi_corner[idx]:
-		if ring_pos[idx] == "p": area += 0.5 * ( dI["d_I"]*(0.5-c[0]) )
-		elif ring_pos[idx] == "c": area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
-		elif ring_pos[idx] == "cp": 
-			if phi<do["phi_d_o"]: area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
-			else: area += 0.5 * ( (do["phi_d_o"]-Phi_corner[idx-1])*r0*r0 + (dI["d_I"] - do["d_o"])*(0.5-c[0]) )
-		elif ring_pos[idx] == "pc": 
-			if phi<do["phi_d_o"]: area += 0.5 * ( dI["d_I"]*(0.5-c[0]) )
-			else: area += 0.5 *  ( do["d_o"]*(0.5-c[0]) + (phi-do["phi_d_o"])*r0*r0 )
-		elif ring_pos[idx] == "cpc": 
-			if phi<do["phi_d_o"]: area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
-			elif phi<do["phi_d_o+"]: area += 0.5 * ( (do["phi_d_o"]-Phi_corner[idx-1])*r0*r0 + (dI["d_I"] - do["d_o"])*(0.5-c[0]) )
-			else: area += 0.5 * ( (do["phi_d_o"]-Phi_corner[idx-1])*r0*r0 + (do["d_o+"] - do["d_o"])*(0.5-c[0]) + (phi-do["phi_d_o+"])*r0*r0 )
-		return area
-	else:
-		if ring_pos[idx] == "p": area += 0.5 * ( (0.5-c[0]) )
-		elif ring_pos[idx] == "c": area += 0.5 * ( (Phi_corner[idx]-Phi_corner[idx-1]) * r0*r0)
-		elif ring_pos[idx] == "cp": area += 0.5 * ( (do["phi_d_o"]-Phi_corner[idx-1])*r0*r0 + (1. - do["d_o"])*(0.5-c[0]) )
-		elif ring_pos[idx] == "pc": area += 0.5 * ( do["d_o"]*(0.5-c[0]) + (Phi_corner[idx]-do["phi_d_o"])*r0*r0 )
-		elif ring_pos[idx] == "cpc": area += 0.5 * ( (do["phi_d_o"]-Phi_corner[idx-1])*r0*r0 + (do["d_o+"] - do["d_o"])*(0.5-c[0]) + (Phi_corner[idx]-do["phi_d_o+"])*r0*r0 )
+	# the edges b, c and d behave identically; K is the edge letter and
+	# X = X_rim[idx] the extent of the edge as seen from the ray origin
+	for idx,K in [(1,"b"),(2,"c"),(3,"d")]:
+		X = X_rim[idx]
+		if phi<=Phi_corner[idx]:
+			if ring_pos[idx] == "p": area += 0.5 * ( dI[K+"_I"]*X )
+			elif ring_pos[idx] == "c": area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
+			elif ring_pos[idx] == "cp": 
+				if phi<do["phi_"+K+"_o"]: area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
+				else: area += 0.5 * ( (do["phi_"+K+"_o"]-Phi_corner[idx-1])*r0*r0 + (dI[K+"_I"] - do[K+"_o"])*X )
+			elif ring_pos[idx] == "pc": 
+				if phi<do["phi_"+K+"_o"]: area += 0.5 * ( dI[K+"_I"]*X )
+				else: area += 0.5 *  ( do[K+"_o"]*X + (phi-do["phi_"+K+"_o"])*r0*r0 )
+			elif ring_pos[idx] == "cpc": 
+				if phi<do["phi_"+K+"_o"]: area += 0.5 * ( (phi-Phi_corner[idx-1])*r0*r0 )
+				elif phi<do["phi_"+K+"_o+"]: area += 0.5 * ( (do["phi_"+K+"_o"]-Phi_corner[idx-1])*r0*r0 + (dI[K+"_I"] - do[K+"_o"])*X )
+				else: area += 0.5 * ( (do["phi_"+K+"_o"]-Phi_corner[idx-1])*r0*r0 + (do[K+"_o+"] - do[K+"_o"])*X + (phi-do["phi_"+K+"_o+"])*r0*r0 )
+			return area
+		else:
+			if ring_pos[idx] == "p": area += 0.5 * ( X )
+			elif ring_pos[idx] == "c": area += 0.5 * ( (Phi_corner[idx]-Phi_corner[idx-1]) * r0*r0)
+			elif ring_pos[idx] == "cp": area += 0.5 * ( (do["phi_"+K+"_o"]-Phi_corner[idx-1])*r0*r0 + (1. - do[K+"_o"])*X )
+			elif ring_pos[idx] == "pc": area += 0.5 * ( do[K+"_o"]*X + (Phi_corner[idx]-do["phi_"+K+"_o"])*r0*r0 )
+			elif ring_pos[idx] == "cpc": area += 0.5 * ( (do["phi_"+K+"_o"]-Phi_corner[idx-1])*r0*r0 + (do[K+"_o+"] - do[K+"_o"])*X + (Phi_corner[idx]-do["phi_"+K+"_o+"])*r0*r0 )
 	
 	
 	idx = 0
@@ -827,11 +695,20 @@ def get_area_summed_M(c,phi,r0,do,dI,phi_c,R_corner,Phi_corner,X_rim,ring_pos):
 
 
 
-def summed_to_indivudual_contribution(sumd):
-	""" given a summed contribution array, it gives the indivudual contributions """
-	return (sumd - np.pad(sumd,((0,0),(1,0)), mode='constant')[:, :-1] - np.pad(sumd,((1,0),(0,0)), mode='constant')[:-1, :] + np.pad(sumd,((1,0),(1,0)), mode='constant')[:-1, :-1])
+def summed_to_individual_contribution(sumd):
+	""" given a summed (cumulative) contribution array, it returns the individual
+		contributions, i.e., the 2d finite difference
+		indiv[i,j] = sumd[i,j] - sumd[i,j-1] - sumd[i-1,j] + sumd[i-1,j-1],
+		where terms outside the array are treated as zero """
+	indiv = sumd.copy()
+	indiv[:,1:] -= sumd[:,:-1]
+	indiv[1:,:] -= sumd[:-1,:]
+	indiv[1:,1:] += sumd[:-1,:-1]
+	return indiv
 
-def get_rotated_pixel_contributionn(c,pos,n_phi_min,n_phi_max,n_r_min, n_r_max, N_phi,N_r, dphi, dr):
+summed_to_indivudual_contribution = summed_to_individual_contribution	# backward-compatible alias (old misspelled name)
+
+def get_rotated_pixel_contribution(c,pos,n_phi_min,n_phi_max,n_r_min, n_r_max, N_phi,N_r, dphi, dr):
 	""" given a pixel's position and the new grid's pixels properties,
 		this function calculates the contribution to all considered new grid cells.
 		in order to work properly, the new grid cells have to be chosen appropriately.
@@ -849,7 +726,7 @@ def get_rotated_pixel_contributionn(c,pos,n_phi_min,n_phi_max,n_r_min, n_r_max, 
 	# 2. precalculate some variable
 	####################################################################
 	
-	phi_c = np.arctan2(c[0],c[1])				# phi-value of the cart. pixel's center
+	phi_c = math.atan2(c[0],c[1])							# phi-value of the cart. pixel's center
 	if phi_c < 0.: phi_c += pix2
 	
 	R_corner = np.zeros(4)						# vector containing distances to the pixel's corners (r1,r2,r3,r4)
@@ -858,21 +735,23 @@ def get_rotated_pixel_contributionn(c,pos,n_phi_min,n_phi_max,n_r_min, n_r_max, 
 	R_corner[2] = get_r(c + np.array([-0.5,-0.5]))
 	R_corner[3] = get_r(c + np.array([-0.5,0.5]))
 	
+	# phi_vals are the upper phi-borders of the contributing phi bins
 	if n_phi_min > n_phi_max: 
+		# contributing phi-range wraps around phi=0 (only possible for 'T' pixels)
 		if pos != "T":
-			print("Error! Unexpected position, given the contributing bin information: ",pos,n_phi_min,n_phi_max)
-			sys.exit()
+			raise RuntimeError(f"Error! Unexpected position, given the contributing bin information: {pos}, {n_phi_min}, {n_phi_max}")
 		phi_vals = [dphi*(n_phi_min+1+_) for _ in range(int(N_phi - 1 - n_phi_min))] + [dphi*_ for _ in range(int(n_phi_max + 2))]
 	elif n_phi_max > N_phi -1: 
-		print("Error! Unexpected bin number encountered: ",n_phi_max)
-		sys.exit()
+		raise RuntimeError(f"Error! Unexpected bin number encountered: {n_phi_max}")
 	elif n_phi_max == N_phi - 1: 
+		# last bin border coincides with phi = 2pi, which is represented as 0.
 		if n_phi_max>n_phi_min: phi_vals = [dphi*(n_phi_min+1+_) for _ in range(dn_phi-1)] + [0.]
 		else: phi_vals = [0.]
 	else: 
 		# the "good" case, i.e., n_phi_min <= n_phi_max < N_phi-1
 		phi_vals = [dphi*(n_phi_min+1+_) for _ in range(dn_phi)]
 	
+	# r0_vals are the outer radii of the contributing rings
 	r0_vals = [dr*(n_r_min+1+_) for _ in range(dn_r)]
 	
 	# dictionaries with info about intersection of circle with pixel
@@ -902,8 +781,7 @@ def get_rotated_pixel_contributionn(c,pos,n_phi_min,n_phi_max,n_r_min, n_r_max, 
 		
 		X_rim = np.array([0.5+c[1],0.5+c[0],0.5-c[1],0.5-c[0]])
 		if not np.all(X_rim>0.): 
-			print("Error! Unexpected position of center in Pixel:",X_rim)
-			sys.exit
+			raise RuntimeError(f"Error! Unexpected position of center in Pixel: {X_rim}")
 		for i,r0 in enumerate(r0_vals): Ring_pos.append(get_ring_pos(r0,c,R_corner,dos[i]))
 	else:
 		Phi_corner = None
@@ -921,8 +799,7 @@ def get_rotated_pixel_contributionn(c,pos,n_phi_min,n_phi_max,n_r_min, n_r_max, 
 		elif pos == "T": dI = get_ray_pixel_intersect_non_M(c,phi)
 		elif pos == "M":  dI = get_ray_pixel_intersect_M(c,phi,Phi_corner)
 		else: 
-			print("Error! Unexpected position in get_rotated_pixel_contribution: ",pos)
-			sys.exit()
+			raise RuntimeError(f"Error! Unexpected position in get_rotated_pixel_contribution: {pos}")
 			
 		for j,(r0,do,ring_pos) in enumerate(zip(r0_vals,dos,Ring_pos)):
 			# now get the area
@@ -930,14 +807,14 @@ def get_rotated_pixel_contributionn(c,pos,n_phi_min,n_phi_max,n_r_min, n_r_max, 
 			contr[i,j] += sub_area
 
 	if debug: contr_old = np.copy(contr)
-	contr = summed_to_indivudual_contribution(contr)
+	contr = summed_to_individual_contribution(contr)
 
 	if debug:
 		if ((not np.all(contr>-1.e-12)) or (not np.all(contr<1.+1.e-12))):
 			print("error: ",pos)
 			print(contr_old)
 			print(contr)
-			sys.exit()
+			raise RuntimeError("Error! Unexpected contribution values encountered.")
 			# ~ contr = np.zeros((dn_phi,dn_r))
 		
 		if abs(contr.sum()-1.)>1e-12:
@@ -945,14 +822,17 @@ def get_rotated_pixel_contributionn(c,pos,n_phi_min,n_phi_max,n_r_min, n_r_max, 
 			print("err")
 			print(contr.sum())
 			print(contr)
-			sys.exit()
+			raise RuntimeError("Error! The pixel contributions do not sum up to 1.")
 
 	return dn_phi,dn_r,contr
+
+get_rotated_pixel_contributionn = get_rotated_pixel_contribution	# backward-compatible alias (old misspelled name)
 			
 	
 	
 def read_input(path_to_input_file):
-	""" Reads the input.dat file that is part of the output of the code when converting and storing the detector. """
+	""" Reads the input.dat file that convert() writes alongside saved results
+		and returns a dict with the values parsed back into their original types """
 	
 	inp = {}
 	
@@ -970,7 +850,8 @@ def read_input(path_to_input_file):
 					val = val.replace(",","")
 					inp[key] = [float(s) for s in val.split()]
 				elif key in ["dr","dphi","R_px_max"]: inp[key] = float(val)
-				elif key == "progress_bar": inp[key] = bool(val)
+				elif key == "R_px_max_in": inp[key] = None if val.strip() == "None" else float(val)
+				elif key == "progress_bar": inp[key] = (val.strip() == "True")
 				else: inp[key] = val
 				
 	return inp
@@ -981,12 +862,12 @@ def convert(data_cart_path, data_cart,N_phi,N_r,center_shift = [0.,0.], results_
 		Task: Convert a cartesian grid into a polar grid
 		Method: In order to find the polar representation of an originally cartesian detector grid, this code overlays the detector with a chosen polar grid and calculates the polar pixel values. 
 				To that end, every cartesian pixel is assumed to represent a homogeneous flux distribution across its full area. The associated value of a polar pixel is then the sum of all values 
-				of overlapping cartsian pixels each weighted with its geometrical intersection area with the polar pixel. 
+				of overlapping cartesian pixels each weighted with its geometrical intersection area with the polar pixel. 
 		Parameters:
 		- input grid data_cart_path[x,y] given in unit Jy
 		- output grid output[phi,r] is given in Jy
 		- conserves overall flux
-		- center_shift is givel in [x_px,y_px], where x_px and y_px are real numbers
+		- center_shift is given in [x_px,y_px], where x_px and y_px are real numbers
 		  that indicate how much the center is shifted from the physical center of the data array
 		- N_phi and N_r are the (integer) numbers of angular and radial "cells" used for the polar detector, respectively
 		- N_phi has to satisfy: N_phi%4 == 0 and N_phi > 0
@@ -997,17 +878,15 @@ def convert(data_cart_path, data_cart,N_phi,N_r,center_shift = [0.,0.], results_
 		   with the name save_name. If None, it is not saved. 
 		- R_px_max is the maximum radius up to which this is done; if None, it uses the whole data region
 		- for data_cart_path[x,y] the angle phi=0 is defined in pos. y-direction and phi=pi/2. in pos. x-direction
-		- overwrite_results allows to overwrite results for the same project. If False it will instead change the project name a bit and save the new results withouth deleting the former results.
+		- overwrite_results allows overwriting results of the same name. If False, a modified name is chosen instead and the new results are saved without deleting the former ones.
 	"""
 	# check conditions for number of cells
 	if ((N_phi%4 != 0) or (N_r <= 0) or (N_phi <= 0)): 
-		print("N_phi has to satisfy: N_phi%4 == 0\nN_r has to satisfy: N_r > 0\nN_phi, N_r = ",N_phi, N_r)
-		sys.exit()
+		raise ValueError(f"N_phi has to satisfy: N_phi%4 == 0 and N_phi > 0\nN_r has to satisfy: N_r > 0\nN_phi, N_r = {N_phi}, {N_r}")
 		
 	if results_folder_path!=None: 
 		if not os.path.exists(results_folder_path): 
-			print("Error! Results can only be saved in an already existing folder: ",results_folder_path)
-			sys.exit()
+			raise ValueError(f"Error! Results can only be saved in an already existing folder: {results_folder_path}")
 	
 	# get image size
 	(N_x,N_y) = data_cart.shape
@@ -1052,12 +931,13 @@ def convert(data_cart_path, data_cart,N_phi,N_r,center_shift = [0.,0.], results_
 			# ~ print("new",c_new,pos_new,n_phi_min_new,n_phi_max_new)
 			
 			# 5. get contribution from rotated pixel 
-			dn_phi, dn_r, contr_rot = get_rotated_pixel_contributionn(c_new,pos_new,n_phi_min_new,n_phi_max_new,n_r_min, n_r_max, N_phi,N_r, dphi, dr)
+			dn_phi, dn_r, contr_rot = get_rotated_pixel_contribution(c_new,pos_new,n_phi_min_new,n_phi_max_new,n_r_min, n_r_max, N_phi,N_r, dphi, dr)
 			
 			# 6. rotate back and add contribution 
 			if n_phi_max>=n_phi_min: 
 				data_polar[n_phi_min:n_phi_max+1,n_r_min:n_r_max+1] += data_cart[i,j]*contr_rot
 			else:
+				# contributing phi-range wraps around phi=0: split into two slices
 				ddn_phi = int(N_phi-n_phi_min)
 				data_polar[n_phi_min:,n_r_min:n_r_max+1] += data_cart[i,j]*contr_rot[:ddn_phi,:]
 				data_polar[:dn_phi-ddn_phi,n_r_min:n_r_max+1] += data_cart[i,j]*contr_rot[ddn_phi:,:]
@@ -1081,7 +961,7 @@ def convert(data_cart_path, data_cart,N_phi,N_r,center_shift = [0.,0.], results_
 		else:
 			if not os.path.exists(results_folder_path+"/"+save_name_fin): os.mkdir(results_folder_path+"/"+save_name_fin)
 		
-		# saving intput
+		# saving input
 		with open(results_folder_path+"/"+save_name_fin+"/input.dat",'w') as f:
 			f.write("Output data is accessed via np.load('path/to/output.npz')['polar']\n")
 			f.write("------------------------------------------------------------------\n")
