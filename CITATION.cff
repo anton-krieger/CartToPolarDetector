@@ -32,6 +32,5 @@ abstract: >-
   cross-section areas with the cartesian pixels and their
   corresponding pixel values.
 license: MIT
-commit: b88749e397c54405c6b3f0ff85ec4d5b7668416b
 version: 0.1.0
-date-released: '2022-01-17'
+date-released: '2026-08-02'

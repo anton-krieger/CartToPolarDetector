@@ -15,16 +15,34 @@ requires-python = ">=3.9"
 dependencies = [
 	"numpy",
 ]
+keywords = [
+	"astronomy",
+	"astrophysics",
+	"detector",
+	"cartesian",
+	"polar",
+	"coordinate-conversion",
+	"regridding",
+	"resampling",
+]
 classifiers = [
 	"License :: OSI Approved :: MIT License",
 	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3.9",
+	"Programming Language :: Python :: 3.10",
+	"Programming Language :: Python :: 3.11",
+	"Programming Language :: Python :: 3.12",
+	"Programming Language :: Python :: 3.13",
 	"Intended Audience :: Science/Research",
 	"Topic :: Scientific/Engineering :: Astronomy",
+	"Topic :: Scientific/Engineering :: Physics",
 	"Operating System :: OS Independent",
 ]
 
 [project.urls]
 Repository = "https://github.com/anton-krieger/CartToPolarDetector"
+Documentation = "https://github.com/anton-krieger/CartToPolarDetector#readme"
+Issues = "https://github.com/anton-krieger/CartToPolarDetector/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

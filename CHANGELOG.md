@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-08-02)
 
 ### Fixed
 - `NameError` in error branches of `get_ray_pixel_intersect_M` (b/c/d cases referenced the wrong variable).
