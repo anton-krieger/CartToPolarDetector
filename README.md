@@ -16,7 +16,16 @@ onto the sky plane (right). The figure can be regenerated with [example/make_rea
 
 ## Installation
 
-The only dependency is `numpy`. To install the package, run the following line from the root of this repository:
+The only dependency is `numpy`. The package is available on
+[PyPI](https://pypi.org/project/CartToPolarDetector/), so the recommended way to
+install it is:
+
+```
+pip install CartToPolarDetector
+```
+
+Alternatively, to install from a local clone (e.g. for development), run the
+following from the root of this repository:
 
 ```
 pip install -e .
