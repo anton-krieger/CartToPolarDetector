@@ -33,5 +33,5 @@ abstract: >-
   corresponding pixel values.
 license: MIT
 commit: b88749e397c54405c6b3f0ff85ec4d5b7668416b
-version: 0.0.1
+version: 0.1.0
 date-released: '2022-01-17'

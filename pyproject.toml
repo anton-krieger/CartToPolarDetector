@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "CartToPolarDetector"
+version = "0.1.0"
+description = "A package to convert a cartesian detector grid into a polar detector grid taking into account the various possible cross section areas of cartesian and polar pixels."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+	{name = "Anton Krieger", email = "akrieger@astrophysik.uni-kiel.de"},
+]
+requires-python = ">=3.9"
+dependencies = [
+	"numpy",
+]
+classifiers = [
+	"License :: OSI Approved :: MIT License",
+	"Programming Language :: Python :: 3",
+	"Intended Audience :: Science/Research",
+	"Topic :: Scientific/Engineering :: Astronomy",
+	"Operating System :: OS Independent",
+]
+
+[project.urls]
+Repository = "https://github.com/anton-krieger/CartToPolarDetector"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+py-modules = ["CartToPolarDetector"]
